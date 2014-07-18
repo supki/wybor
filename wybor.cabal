@@ -24,10 +24,10 @@ library
     Haskell2010
   build-depends:
       ansi-terminal >= 0.6
-    , base          >= 4.6 && < 5
+    , base          >= 4.7 && < 5
     , conduit       >= 1.1
     , exceptions    >= 0.6
-    , lens          >= 4.2
+    , lens          >= 4.3
     , text          >= 1.1
     , transformers  >= 0.3
     , process       >= 1.1
@@ -46,7 +46,7 @@ executable wybor
   default-language:
     Haskell2010
   build-depends:
-      base                 >= 4.6 && < 5
+      base                 >= 4.7 && < 5
     , optparse-applicative >= 0.9
     , lens
     , semigroups
@@ -64,7 +64,7 @@ test-suite spec
     exitcode-stdio-1.0
   build-depends:
       ansi-terminal
-    , base          >= 4.6 && < 5
+    , base          >= 4.7 && < 5
     , conduit
     , exceptions
     , hspec         >= 1.10

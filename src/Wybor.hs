@@ -252,13 +252,13 @@ deleteWord :: Wybor a -> Query Text a -> Query Text a
 deleteWord c = fromInput c . view (input.to (Text.dropWhileEnd (not . isSpace) . Text.stripEnd))
 
 fromInput :: Wybor a -> Text -> Query Text a
-fromInput c q = Query { _matches = view (alternatives.to (matching q)) c, _input = q }
+fromInput c q = Query { _matches = view (alternatives.to (computeMatches q)) c, _input = q }
 
 fromSelect :: Wybor a -> Query Text a
 fromSelect c = fromInput c (view initial c)
 
-matching :: Text -> NonEmpty (Text, a) -> Maybe (Zipper (Text, a))
-matching q = Zipper.fromList . sortOnByOf choiceScore cmp positive . toList
+computeMatches :: Text -> NonEmpty (Text, a) -> Maybe (Zipper (Text, a))
+computeMatches q = Zipper.fromList . sortOnByOf choiceScore cmp positive . toList
  where
   choiceScore = score (Input q) . Choice . fst
   positive s = s > minBound
