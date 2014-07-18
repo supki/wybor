@@ -1,0 +1,85 @@
+name:                wybor
+version:             0.1.0
+synopsis:            Console line fuzzy search
+description:
+  Console line fuzzy search as a library
+homepage:            https://github.com/supki/wybor
+license:             BSD2
+license-file:        LICENSE
+author:              Matvey Aksenov
+maintainer:          matvey.aksenov@gmail.com
+copyright:           Matvey Aksenov 2014
+category:            Text
+build-type:          Simple
+cabal-version:       >= 1.10
+extra-source-files:
+  README.markdown
+
+source-repository head
+  type: git
+  location: https://github.com/supki/wybor
+
+library
+  default-language:
+    Haskell2010
+  build-depends:
+      ansi-terminal >= 0.6
+    , base          >= 4.6 && < 5
+    , conduit       >= 1.1
+    , exceptions    >= 0.6
+    , lens          >= 4.2
+    , text          >= 1.1
+    , transformers  >= 0.3
+    , process       >= 1.1
+    , semigroups    >= 0.15
+    , terminal-size >= 0.2.1
+  hs-source-dirs:
+    src
+  exposed-modules:
+    Wybor
+  other-modules:
+    Score
+    TTY
+    Zipper
+
+executable wybor
+  default-language:
+    Haskell2010
+  build-depends:
+      base                 >= 4.6 && < 5
+    , optparse-applicative >= 0.9
+    , lens
+    , semigroups
+    , text
+    , wybor
+  hs-source-dirs:
+    bin
+  main-is:
+    Main.hs
+
+test-suite spec
+  default-language:
+    Haskell2010
+  type:
+    exitcode-stdio-1.0
+  build-depends:
+      ansi-terminal
+    , base          >= 4.6 && < 5
+    , conduit
+    , exceptions
+    , hspec         >= 1.10
+    , lens
+    , monad-control
+    , process
+    , semigroups
+    , terminal-size
+    , text
+    , transformers
+    , unix
+  hs-source-dirs:
+    test
+    src
+  main-is:
+    Spec.hs
+  cpp-options:
+    -DTEST
