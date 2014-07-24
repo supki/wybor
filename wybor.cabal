@@ -26,8 +26,8 @@ library
       ansi-terminal >= 0.6
     , base          >= 4.7 && < 5
     , conduit       >= 1.1
-    , exceptions    >= 0.6
     , lens          >= 4.3
+    , resourcet     >= 1.1
     , text          >= 1.1
     , transformers  >= 0.3
     , process       >= 1.1
@@ -71,6 +71,7 @@ test-suite spec
     , lens
     , monad-control
     , process
+    , resourcet
     , semigroups
     , terminal-size
     , text

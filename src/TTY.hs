@@ -13,26 +13,28 @@ module TTY
   , TTYException(..)
   , withTTY
   , getChar
-  , putStr
-  , putStrLn
-  , putLn
-  , clearLn
+  , putText
+  , putTextLine
+  , putLine
+  , clearScreenBottom
   , withHiddenCursor
   , getCursorRow
   , moveCursor
-  , rewindCursor
   ) where
 
 import           Control.Exception (Exception(..), SomeException(..), IOException)
 import qualified Control.Exception as E
 import           Control.Monad
 import           Control.Monad.IO.Class (MonadIO(..))
+import           Control.Monad.Trans.Resource (MonadResource)
 import           Data.Char (isDigit)
+import           Data.Conduit (Conduit)
+import qualified Data.Conduit as C
 import           Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
 import           Data.Typeable (Typeable, cast)
-import           Prelude hiding (getChar, putStr, putStrLn)
+import           Prelude hiding (getChar)
 import           System.Console.ANSI as Ansi
 import           System.Console.Terminal.Size (Window(..), hSize)
 import           System.Exit (ExitCode(..))
@@ -62,19 +64,28 @@ instance Exception TTYException where
     | Just e' <- fromException e = Just (TTYIOException e')
     | otherwise                  = cast se
 
-withTTY :: (TTY -> IO a) -> IO (Either TTYException a)
-withTTY f = E.try $
-  IO.withFile ttyDevice IO.ReadMode  $ \inHandle  ->
-  IO.withFile ttyDevice IO.WriteMode $ \outHandle -> do
-    IO.hSetBuffering outHandle IO.NoBuffering
+withTTY :: MonadResource m => (TTY -> Conduit i m o) -> Conduit i m o
+withTTY f =
+  withFile ttyDevice IO.ReadMode  $ \inHandle  ->
+  withFile ttyDevice IO.WriteMode $ \outHandle -> do
+    setBuffering outHandle IO.NoBuffering
     withConfiguredTTY $ do
-      mw <- hSize outHandle
+      mw <- hWindow outHandle
       case mw of
-        Nothing -> E.throwIO TTYNotATTY
+        Nothing -> liftIO (E.throwIO TTYNotATTY)
         Just w  -> f TTY { inHandle, outHandle, winHeight = height w, winWidth = width w }
 
-withConfiguredTTY :: IO a -> IO a
-withConfiguredTTY = E.bracket (do s <- state; configure; return s) unconfigure . const
+withFile :: MonadResource m => FilePath -> IO.IOMode -> (IO.Handle -> Conduit i m o) -> Conduit i m o
+withFile name mode = C.bracketP (IO.openFile name mode) IO.hClose
+
+withConfiguredTTY :: MonadResource m => Conduit i m o -> Conduit i m o
+withConfiguredTTY = C.bracketP (do s <- state; configure; return s) unconfigure . const
+
+setBuffering :: MonadIO m => IO.Handle -> IO.BufferMode -> m ()
+setBuffering h m = liftIO (IO.hSetBuffering h m)
+
+hWindow :: (Integral n, MonadIO m) => IO.Handle -> m (Maybe (Window n))
+hWindow = liftIO . hSize
 
 newtype TTYState = TTYState String
 
@@ -107,26 +118,26 @@ run p args =
 getChar :: MonadIO m => TTY -> m Char
 getChar = liftIO . IO.hGetChar . inHandle
 
-putStr :: MonadIO m => TTY -> Text -> m ()
-putStr TTY { outHandle } = liftIO . Text.hPutStr outHandle
+putText :: MonadIO m => TTY -> Text -> m ()
+putText TTY { outHandle } = liftIO . Text.hPutStr outHandle
 
-putStrLn :: MonadIO m => TTY -> Text -> m ()
-putStrLn TTY { outHandle } = liftIO . Text.hPutStrLn outHandle
+putTextLine :: MonadIO m => TTY -> Text -> m ()
+putTextLine TTY { outHandle } = liftIO . Text.hPutStrLn outHandle
 
-putLn :: MonadIO m => TTY -> m ()
-putLn TTY { outHandle } = liftIO (Text.hPutStrLn outHandle Text.empty)
+putLine :: MonadIO m => TTY -> m ()
+putLine TTY { outHandle } = liftIO (Text.hPutStrLn outHandle Text.empty)
 
-clearLn :: MonadIO m => TTY -> m ()
-clearLn TTY { outHandle } = liftIO $ do
+clearScreenBottom :: MonadIO m => TTY -> m ()
+clearScreenBottom TTY { outHandle } = liftIO $ do
   Ansi.hSetCursorColumn outHandle 0
-  Ansi.hClearFromCursorToLineEnd outHandle
+  Ansi.hClearFromCursorToScreenEnd outHandle
 
 withHiddenCursor :: TTY -> IO a -> IO a
 withHiddenCursor TTY { outHandle = h } = E.bracket_ (Ansi.hHideCursor h) (Ansi.hShowCursor h)
 
 getCursorRow :: MonadIO m => TTY -> m Int
 getCursorRow tty = do
-  putStr tty magicCursorPositionSequence
+  putText tty magicCursorPositionSequence
   res <- parseAnsiResponse tty
   case res of
     Just r  -> return (r - 1) -- the response is 1-based
@@ -146,9 +157,6 @@ parseAnsiResponse tty = liftM parse (go [])
 
 moveCursor :: TTY -> Int -> Int -> IO ()
 moveCursor = Ansi.hSetCursorPosition . outHandle
-
-rewindCursor :: TTY -> IO ()
-rewindCursor TTY { outHandle } = Ansi.hSetCursorColumn outHandle 0
 
 ttyDevice, nullDevice :: FilePath
 ttyDevice  = "/dev/tty"

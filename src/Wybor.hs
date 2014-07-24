@@ -62,7 +62,7 @@
 --   - @C-h@ deletes last character (as does @Backspace@)
 --   - @C-n@ focuses the next alternative
 --   - @C-p@ focuses the previous alternative
---   - @C-c@ abort the selection
+--   - @C-d@ aborts the selection
 --
 module Wybor
   ( Wybor
@@ -70,39 +70,37 @@ module Wybor
   , fromAssoc
   , fromTexts
   , select
+  , selections
   , TTYException(..)
 #ifdef TEST
   , pipeline
   , keyEnter
-  , keyCtrlN
-  , keyCtrlP
-  , keyCtrlU
-  , keyCtrlW
   , keyBksp
-  , keyCtrlH
+  , keyCtrl
 #endif
   ) where
 
-import           Control.Exception (AsyncException(..))
+import           Control.Exception (try)
 import           Control.Lens
 import           Control.Monad
-import           Control.Monad.Catch (MonadMask, catch, finally, throwM)
+import           Control.Monad.Trans.Resource (MonadResource, runResourceT)
 import           Control.Monad.IO.Class (MonadIO(..))
-import           Data.Conduit (Source, Conduit, Sink, (=$=), ($$))
+import           Data.Conduit (Source, Conduit, (=$=), ($$))
 import qualified Data.Conduit as C
-import           Data.Char (isPrint, isSpace)
-import           Data.Foldable (for_, toList)
+import           Data.Char (isPrint, isSpace, chr, ord)
+import           Data.Foldable (toList)
 import           Data.Function (fix,on)
 import           Data.List (sortBy)
 import           Data.List.NonEmpty (NonEmpty)
 import           Data.Monoid (Monoid(..), (<>))
 import           Data.Text (Text)
 import qualified Data.Text as Text
-import           Prelude hiding (getChar, putStr, unlines)
+import           Prelude hiding (unlines)
 import           System.Console.ANSI as Ansi
 
 import           Score (score, Input(..), Choice(..))
-import           TTY
+import           TTY (TTY, TTYException)
+import qualified TTY
 import           Zipper (Zipper, focus, zipperN)
 import qualified Zipper
 
@@ -144,12 +142,16 @@ instance HasWybor (Wybor a) a where
   {-# INLINE wybor #-}
 
 
--- | Select an item from 'Wybor'.
+-- | Select an item from 'Wybor' once.
 --
--- The user can interrupt the process with @C-c@ and then you get 'Nothing'.
+-- The user can interrupt the process with @C-d@ and then you get 'Nothing'.
 -- Exceptions result in @'Left' _@
 select :: HasWybor t a => t -> IO (Either TTYException (Maybe a))
-select = withTTY . pipeline . view wybor
+select c = try . runResourceT $ selections c $$ C.await
+
+-- | Continuously select items from 'Wybor'. Also see 'select'
+selections :: (HasWybor t a, MonadResource m) => t -> Source m a
+selections = TTY.withTTY . pipeline
 
 -- | Construct 'Wybor' from the nonempty list of key-value pairs
 fromAssoc :: NonEmpty (Text, a) -> Wybor a
@@ -161,20 +163,19 @@ fromAssoc xs = Wybor { _alternatives = xs, _prefix = ">>> ", _visible = 10, _ini
 fromTexts :: NonEmpty Text -> Wybor Text
 fromTexts = fromAssoc . fmap (\x -> (x, x))
 
+pipeline :: (HasWybor t a, MonadIO m) => t -> TTY -> Source m a
+pipeline c tty = sourceInput tty =$= parseInput =$= renderUI tty (view wybor c)
 
-pipeline :: (MonadIO m, MonadMask m) => Wybor a -> TTY -> m (Maybe a)
-pipeline c tty = (inputs tty =$= events $$ ui tty c) `catch` handleCtrlC `finally` cleanUp
- where
-  handleCtrlC UserInterrupt = return Nothing
-  handleCtrlC e             = throwM e
+sourceInput :: MonadIO m => TTY -> Source m Char
+sourceInput tty = fix $ \loop -> TTY.getChar tty >>= C.yield >> loop
 
-  cleanUp = clearLn tty
-
-inputs :: MonadIO m => TTY -> Source m Char
-inputs tty = fix $ \loop -> getChar tty >>= C.yield >> loop
-
-events :: Monad m => Conduit Char m Event
-events = C.awaitForever $ \k -> for_ (handleKey k) C.yield >> events
+parseInput :: Monad m => Conduit Char m Event
+parseInput = C.await >>= \mk -> case mk of
+  Nothing ->         return ()
+  Just k  -> case handleKey k of
+    Nothing       -> return ()
+    Just Nothing  ->              parseInput
+    Just (Just e) -> C.yield e >> parseInput
 
 
 data Event =
@@ -187,26 +188,27 @@ data Event =
   | Append Char
     deriving (Show, Eq)
 
-handleKey :: Char -> Maybe Event
+handleKey :: Char -> Maybe (Maybe Event)
 handleKey c
-  | c == keyEnter = Just Done       -- Enter, C-j
-  | c == keyCtrlN = Just Down       -- C-n
-  | c == keyCtrlP = Just Up         -- C-p
-  | c == keyCtrlU = Just Clear      -- C-u
-  | c == keyCtrlW = Just DeleteWord -- C-w
-  | c == keyBksp  = Just DeleteChar -- Backspace
-  | c == keyCtrlH = Just DeleteChar -- C-h
-  | isPrint c     = Just (Append c)
-  | otherwise     = Nothing
+  | c == keyEnter    = Just (Just Done)       -- Enter, C-j
+  | c == keyCtrl 'D' = Nothing                -- C-d
+  | c == keyCtrl 'N' = Just (Just Down)       -- C-n
+  | c == keyCtrl 'P' = Just (Just Up)         -- C-p
+  | c == keyCtrl 'U' = Just (Just Clear)      -- C-u
+  | c == keyCtrl 'W' = Just (Just DeleteWord) -- C-w
+  | c == keyBksp     = Just (Just DeleteChar) -- Backspace
+  | c == keyCtrl 'H' = Just (Just DeleteChar) -- C-h
+  | isPrint c        = Just (Just (Append c))
+  | otherwise        = Just Nothing
 
-keyEnter, keyCtrlN, keyCtrlP, keyCtrlU, keyCtrlW, keyBksp, keyCtrlH :: Char
+keyEnter, keyBksp :: Char
 keyEnter = '\n'
-keyCtrlN = '\SO'
-keyCtrlP = '\DLE'
-keyCtrlU = '\NAK'
-keyCtrlW = '\ETB'
 keyBksp  = '\DEL'
-keyCtrlH = '\b'
+
+-- | @keyCtrl c@ converts @c@ to Ctrl-@c@ character. Only expected to work
+-- with upper case ASCII characters from @A-Z@ range.
+keyCtrl :: Char -> Char
+keyCtrl a = chr (ord a - 64)
 
 
 data Query a b = Query
@@ -268,25 +270,27 @@ sortOnByOf :: Ord b => (a -> b) -> (b -> b -> Ordering) -> (b -> Bool) -> [a] ->
 sortOnByOf f c p = map fst . sortBy (c `on` snd) . filter (p . snd) . map (\x -> (x, f x))
 
 
-ui :: MonadIO m => TTY -> Wybor a -> Sink Event m (Maybe a)
-ui tty c = do
-  row <- getCursorRow tty
-  let offset = max 0 (linesTaken c - (winHeight tty - row))
-  replicateM_ offset (putLn tty)
+renderUI :: MonadIO m => TTY -> Wybor a -> Conduit Event m a
+renderUI tty c = do
+  row <- TTY.getCursorRow tty
+  let offset = max 0 (linesTaken c - (TTY.winHeight tty - row))
+  replicateM_ offset (TTY.putLine tty)
   flip fix (fromSelect c) $ \loop s -> do
-    liftIO (render tty c (row - offset) s)
+    render tty c (row - offset) s
     me <- C.await
     case me of
-      Nothing -> return Nothing
-      Just e  -> either (return . Just) loop (handleEvent c s e)
+      Nothing -> cleanUp
+      Just e  -> either (\r -> cleanUp >> C.yield r >> loop s) loop (handleEvent c s e)
+ where
+  cleanUp = TTY.clearScreenBottom tty
 
-render :: TTY -> Wybor a -> Int -> Query Text a -> IO ()
-render tty c top s = withHiddenCursor tty $ do
+render :: MonadIO m => TTY -> Wybor a -> Int -> Query Text a -> m ()
+render tty c top s = liftIO . TTY.withHiddenCursor tty $ do
   let column  = lengthOf (prefix.each) c + lengthOf (input.each) s
       content = unlines (map cleanly (take (linesTaken c) (choicesLines tty c s ++ repeat "")))
-  rewindCursor tty
-  putStr tty content
-  moveCursor tty top column
+  TTY.moveCursor tty top 0
+  TTY.putText tty content
+  TTY.moveCursor tty top column
  where
   unlines = Text.intercalate "\n"
   cleanly l = l <> Text.pack Ansi.clearFromCursorToLineEndCode
@@ -296,7 +300,7 @@ choicesLines tty c s =
   let
     mz = preview (matches.traverse) s
     n  = view visible c
-    w  = winWidth tty
+    w  = TTY.winWidth tty
   in
     Text.take w (view prefix c <> view input s) :
     maybe [] (zipperN n combine . fmap (Text.take w . fst)) mz

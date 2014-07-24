@@ -3,6 +3,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 module WyborSpec (spec) where
 
+import           Data.Conduit (($$))
+import qualified Data.Conduit as C
 import           Data.List.NonEmpty (NonEmpty)
 import           Data.Text (Text)
 import qualified System.IO as IO
@@ -34,21 +36,21 @@ spec =
     it "provides selection options" $
       Input
         [("foo", 4), ("bar", 7), ("baz", 11)]
-        ("b" ++ [keyCtrlN, keyEnter])
+        ("b" ++ [keyCtrl 'N', keyEnter])
      `shouldSelect`
       Just 11
 
     it "provides line-editing facilites" $
       Input
         [("foo", 4), ("bar", 7), ("baz", 11)]
-        ("bzo" ++ [keyCtrlH, keyEnter])
+        ("bzo" ++ [keyCtrl 'H', keyEnter])
      `shouldSelect`
       Just 11
 
     it "provides more line-editing facilites" $
       Input
         [("foo", 4), ("bar", 7), ("baz", 11)]
-        ("bzo" ++ [keyCtrlU] ++ "fo" ++ [keyEnter])
+        ("bzo" ++ [keyCtrl 'U'] ++ "fo" ++ [keyEnter])
      `shouldSelect`
       Just 4
 
@@ -65,9 +67,12 @@ shouldSelect (Input xs s) r =
     IO.hPutStr oh ("\ESC[1;1R" ++ s)
     IO.hFlush oh
     IO.hClose oh
-    pipeline (fromAssoc xs) TTY
+    selectOnce (fromAssoc xs) TTY
       { outHandle = null
       , inHandle  = ih
       , winHeight = 4
       , winWidth  = 7
       } `shouldReturn` r
+
+selectOnce :: Wybor a -> TTY -> IO (Maybe a)
+selectOnce c tty = pipeline c tty $$ C.await
