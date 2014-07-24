@@ -1,5 +1,9 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE LambdaCase #-}
@@ -81,20 +85,22 @@ module Wybor
   ) where
 
 import           Control.Exception (try)
-import           Control.Lens
+import           Control.Lens hiding (lined)
 import           Control.Monad
 import           Control.Monad.Trans.Resource (MonadResource, runResourceT)
 import           Control.Monad.IO.Class (MonadIO(..))
 import           Data.Conduit (Source, Conduit, (=$=), ($$))
 import qualified Data.Conduit as C
 import           Data.Char (isPrint, isSpace, chr, ord)
-import           Data.Foldable (toList)
+import           Data.Data (Typeable, Data)
+import           Data.Foldable (Foldable, toList)
 import           Data.Function (fix,on)
 import           Data.List (sortBy)
 import           Data.List.NonEmpty (NonEmpty)
 import           Data.Monoid (Monoid(..), (<>))
 import           Data.Text (Text)
 import qualified Data.Text as Text
+import           GHC.Generics (Generic)
 import           Prelude hiding (unlines)
 import           System.Console.ANSI as Ansi
 
@@ -107,11 +113,10 @@ import qualified Zipper
 
 -- | The description of the alternative choices, see 'HasWybor'
 data Wybor a = Wybor
-  { _alternatives :: NonEmpty (Text, a)
-  , _visible      :: Int
-  , _prefix       :: Text
-  , _initial      :: Text
-  } deriving (Show, Eq, Functor)
+  { _alternatives     :: NonEmpty (Text, a)
+  , _visible, _height :: Int
+  , _prefix, _initial :: Text
+  } deriving (Show, Eq, Typeable, Data, Generic, Functor, Foldable, Traversable)
 
 -- | A bunch of lenses to pick and configure 'Wybor'
 class HasWybor t a | t -> a where
@@ -126,6 +131,11 @@ class HasWybor t a | t -> a where
   visible :: Lens' t Int
   visible = wybor . \f x -> f (_visible x) <&> \y -> x { _visible = y }
   {-# INLINE visible #-}
+
+  -- | How many lines every alternative takes on the screen?
+  height :: Lens' t Int
+  height = wybor . \f x -> f (_height x) <&> \y -> x { _height = y }
+  {-# INLINE height #-}
 
   -- | Prompt prefix
   prefix :: Lens' t Text
@@ -155,7 +165,13 @@ selections = TTY.withTTY . pipeline
 
 -- | Construct 'Wybor' from the nonempty list of key-value pairs
 fromAssoc :: NonEmpty (Text, a) -> Wybor a
-fromAssoc xs = Wybor { _alternatives = xs, _prefix = ">>> ", _visible = 10, _initial = "" }
+fromAssoc xs = Wybor
+  { _alternatives = xs
+  , _visible = 10
+  , _height = 1
+  , _prefix = ">>> "
+  , _initial = ""
+  }
 
 -- | Construct 'Wybor' from the nonempty list of strings.
 --
@@ -276,7 +292,7 @@ renderUI tty c = do
   let offset = max 0 (linesTaken c - (TTY.winHeight tty - row))
   replicateM_ offset (TTY.putLine tty)
   flip fix (fromSelect c) $ \loop s -> do
-    render tty c (row - offset) s
+    renderQuery tty c (row - offset) s
     me <- C.await
     case me of
       Nothing -> cleanUp
@@ -284,30 +300,73 @@ renderUI tty c = do
  where
   cleanUp = TTY.clearScreenBottom tty
 
-render :: MonadIO m => TTY -> Wybor a -> Int -> Query Text a -> m ()
-render tty c top s = liftIO . TTY.withHiddenCursor tty $ do
-  let column  = lengthOf (prefix.each) c + lengthOf (input.each) s
-      content = unlines (map cleanly (take (linesTaken c) (choicesLines tty c s ++ repeat "")))
-  TTY.moveCursor tty top 0
-  TTY.putText tty content
-  TTY.moveCursor tty top column
- where
-  unlines = Text.intercalate "\n"
-  cleanly l = l <> Text.pack Ansi.clearFromCursorToLineEndCode
+renderQuery :: MonadIO m => TTY -> Wybor a -> Int -> Query Text a -> m ()
+renderQuery tty c top s =
+  liftIO . TTY.withHiddenCursor tty $ renderContent tty top (columnsTaken c s) (content tty c s)
 
-choicesLines :: TTY -> Wybor a -> Query Text b -> [Text]
-choicesLines tty c s =
-  let
-    mz = preview (matches.traverse) s
-    n  = view visible c
-    w  = TTY.winWidth tty
-  in
-    Text.take w (view prefix c <> view input s) :
-    maybe [] (zipperN n combine . fmap (Text.take w . fst)) mz
+renderContent :: TTY -> Int -> Int -> Text -> IO ()
+renderContent tty x y t = do
+  TTY.moveCursor tty x 0
+  TTY.putText tty t
+  TTY.moveCursor tty x y
+
+content :: TTY -> Wybor a -> Query Text b -> Text
+content tty c s =
+  review lined . map (text . unline . clean . highlight tty . expand tty c . line) $ items c s
+
+data Item s = Plain s | Chosen s | Prefix s deriving (Functor)
+
+item :: (s -> a) -> (s -> a) -> (s -> a) -> Item s -> a
+item f _ _ (Plain s)  = f s
+item _ g _ (Chosen s) = g s
+item _ _ h (Prefix s) = h s
+
+text :: Item s -> s
+text = item id id id
+
+lined :: Iso' Text [Text]
+lined = iso Text.lines (Text.intercalate "\n")
+
+line :: Item Text -> Item [Text]
+line = fmap (view lined)
+
+expand :: TTY -> Wybor a -> Item [Text] -> Item [Text]
+expand tty c = \case
+  Plain  xs -> Plain  (take h (map (Text.take w) xs ++ repeat ""))
+  Chosen xs -> Chosen (take h (map (Text.take w) xs ++ repeat ""))
+  Prefix xs -> Prefix (take 1 xs)
  where
-  combine xs y zs = xs ++ [swap <> y <> unswap] ++ zs
-  swap   = Text.pack (Ansi.setSGRCode [Ansi.SetSwapForegroundBackground True])
-  unswap = Text.pack (Ansi.setSGRCode [Ansi.SetSwapForegroundBackground False])
+  w = TTY.winWidth tty
+  h = view height c
+
+clean :: Item [Text] -> Item [Text]
+clean = fmap (map (\l -> l <> Text.pack Ansi.clearFromCursorToLineEndCode))
+
+highlight :: TTY -> Item [Text] -> Item [Text]
+highlight _   xs@(Plain _) = xs
+highlight tty (Chosen xs) =
+  Chosen (map (\x -> swap True <> Text.justifyLeft (TTY.winWidth tty) ' ' x <> swap False) xs)
+highlight _   xs@(Prefix _) = xs
+
+swap :: Bool -> Text
+swap b = Text.pack (Ansi.setSGRCode [Ansi.SetSwapForegroundBackground b])
+
+unline :: Item [Text] -> Item Text
+unline = fmap (review lined)
+
+items :: Wybor a -> Query Text b -> [Item Text]
+items c s = take (itemsShown c + 1) $
+     Prefix (view prefix c <> view input s)
+  :  maybe [] (zipperN (view visible c) combine . fmap fst) (preview (matches.traverse) s)
+  ++ repeat (Plain "")
+ where
+  combine xs y zs = map Plain xs ++ [Chosen y] ++ map Plain zs
 
 linesTaken :: Wybor a -> Int
-linesTaken c = min (lengthOf (alternatives.folded) c) (view visible c) + 1
+linesTaken c = itemsShown c * view height c + 1
+
+itemsShown :: Wybor a -> Int
+itemsShown c = min (lengthOf (alternatives.folded) c) (view visible c)
+
+columnsTaken :: Wybor a -> Query Text a -> Int
+columnsTaken c s = lengthOf (prefix.each) c + lengthOf (input.each) s

@@ -8,5 +8,5 @@ Anyone familiar with [selecta][selecta] should figure out what's being offered.
 [Haddocks][haddocks] and more [haddocks][more-haddocks] in case Hackage feels like being dead today.
 
   [selecta]: https://github.com/garybernhardt/selecta
-  [haddocks]: http://supki.github.io/xml-html-conduit-lens
+  [haddocks]: http://supki.github.io/wybor
   [more-haddocks]: https://budueba.com/wybor

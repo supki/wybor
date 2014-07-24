@@ -14,7 +14,7 @@ import           Prelude hiding (init, lines)
 import           System.Exit (exitFailure)
 import           Text.Printf (printf)
 
-import           Wybor (TTYException, select, fromTexts, visible, prefix, initial)
+import           Wybor (HasWybor(..), TTYException, select, fromTexts)
 import           Paths_wybor (version)
 
 
@@ -30,6 +30,7 @@ main = do
 
 data Options = Options
   { lines :: Maybe Int
+  , size  :: Maybe Int
   , pref  :: Maybe Text
   , init  :: Maybe Text
   } deriving (Show, Eq)
@@ -43,6 +44,7 @@ options = execParser parser
 
   go = Options
     <$> optional (option (long "lines" <> short 'n' <> help "Choices to show"))
+    <*> optional (option (long "height" <> short 'm' <> help "Choice height"))
     <*> optional (textOption (long "prefix" <> short 'p' <> help "Prompt prefix"))
     <*> optional (textOption (long "init" <> short 'i' <> help "Initial input"))
 
@@ -53,9 +55,10 @@ inputs :: IO (NonEmpty Text)
 inputs = maybe exitFailure return . nonEmpty . Text.lines =<< Text.getContents
 
 output :: Options -> NonEmpty Text -> IO (Either TTYException (Maybe Text))
-output Options { lines, pref, init } ins =
+output Options { lines, size, pref, init } ins =
   select $ fromTexts ins
     & visible %~ probably lines
+    & height %~ probably size
     & prefix %~ probably pref
     & initial %~ probably init
 
