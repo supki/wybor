@@ -1,8 +1,7 @@
 name:                wybor
 version:             0.1.0
 synopsis:            Console line fuzzy search
-description:
-  Console line fuzzy search as a library
+description:         Console line fuzzy search as a library
 homepage:            https://github.com/supki/wybor
 license:             BSD2
 license-file:        LICENSE
@@ -12,6 +11,7 @@ copyright:           Matvey Aksenov 2014
 category:            Text
 build-type:          Simple
 cabal-version:       >= 1.10
+tested-with:         GHC == 7.6.3, GHC == 7.8.2
 extra-source-files:
   README.markdown
 
@@ -24,10 +24,14 @@ library
     Haskell2010
   build-depends:
       ansi-terminal >= 0.6
-    , base          >= 4.7 && < 5
+    , async         >= 2.0
+    , base          >= 4.6 && < 5
     , conduit       >= 1.1
     , lens          >= 4.3
+    , monad-control >= 0.3.3
     , resourcet     >= 1.1
+    , stm           >= 2.4
+    , stm-conduit   >= 2.5.0
     , text          >= 1.1
     , transformers  >= 0.3
     , process       >= 1.1
@@ -46,9 +50,9 @@ executable wybor
   default-language:
     Haskell2010
   build-depends:
-      base                 >= 4.7 && < 5
-    , optparse-applicative >= 0.9
+      base                 >= 4.6 && < 5
     , lens
+    , optparse-applicative >= 0.9
     , semigroups
     , text
     , wybor
@@ -56,6 +60,8 @@ executable wybor
     bin
   main-is:
     Main.hs
+  ghc-options:
+    -threaded
 
 test-suite spec
   default-language:
@@ -64,7 +70,8 @@ test-suite spec
     exitcode-stdio-1.0
   build-depends:
       ansi-terminal
-    , base          >= 4.7 && < 5
+    , async
+    , base          >= 4.6 && < 5
     , conduit
     , exceptions
     , hspec         >= 1.10
@@ -73,6 +80,8 @@ test-suite spec
     , process
     , resourcet
     , semigroups
+    , stm
+    , stm-conduit
     , terminal-size
     , text
     , transformers
@@ -82,5 +91,7 @@ test-suite spec
     src
   main-is:
     Spec.hs
+  ghc-options:
+    -threaded
   cpp-options:
     -DTEST

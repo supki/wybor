@@ -13,6 +13,7 @@ module TTY
   , TTYException(..)
   , withTTY
   , getChar
+  , getCharNonBlocking
   , putText
   , putTextLine
   , putLine
@@ -38,9 +39,10 @@ import           Prelude hiding (getChar)
 import           System.Console.ANSI as Ansi
 import           System.Console.Terminal.Size (Window(..), hSize)
 import           System.Exit (ExitCode(..))
-import           System.Process
 import qualified System.IO as IO
 import qualified System.IO.Error as IO
+import           System.Process
+import           System.Timeout (timeout)
 import           Text.Read (readMaybe)
 
 
@@ -117,6 +119,9 @@ run p args =
 
 getChar :: MonadIO m => TTY -> m Char
 getChar = liftIO . IO.hGetChar . inHandle
+
+getCharNonBlocking :: MonadIO m => TTY -> m (Maybe Char)
+getCharNonBlocking = liftIO . timeout 100000 . IO.hGetChar . inHandle
 
 putText :: MonadIO m => TTY -> Text -> m ()
 putText TTY { outHandle } = liftIO . Text.hPutStr outHandle

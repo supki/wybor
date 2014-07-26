@@ -1,11 +1,10 @@
 {-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 module WyborSpec (spec) where
 
 import           Data.Conduit (($$))
 import qualified Data.Conduit as C
-import           Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as NonEmpty
 import           Data.Text (Text)
 import qualified System.IO as IO
 import qualified System.Posix as Posix
@@ -54,7 +53,14 @@ spec =
      `shouldSelect`
       Just 4
 
-data Input a = Input (NonEmpty (Text, a)) String
+    it "supports infinite input (as long as the query is empty)" $
+      Input
+        (zip (repeat "foo") [1..])
+        [keyCtrl 'N', keyCtrl 'N', keyEnter]
+     `shouldSelect`
+      Just 3
+
+data Input a = Input [(Text, a)] String
 
 type Expect a = (Show a, Eq a)
 
@@ -67,12 +73,12 @@ shouldSelect (Input xs s) r =
     IO.hPutStr oh ("\ESC[1;1R" ++ s)
     IO.hFlush oh
     IO.hClose oh
-    selectOnce (fromAssoc xs) TTY
+    selectOnce (fromAssoc (NonEmpty.fromList xs)) TTY
       { outHandle = null
       , inHandle  = ih
       , winHeight = 4
       , winWidth  = 7
       } `shouldReturn` r
 
-selectOnce :: Wybor a -> TTY -> IO (Maybe a)
+selectOnce :: Show a => Wybor IO a -> TTY -> IO (Maybe a)
 selectOnce c tty = pipeline c tty $$ C.await

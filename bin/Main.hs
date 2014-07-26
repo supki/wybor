@@ -14,7 +14,8 @@ import           Prelude hiding (init, lines)
 import           System.Exit (exitFailure)
 import           Text.Printf (printf)
 
-import           Wybor (HasWybor(..), TTYException, select, fromTexts)
+import           Wybor (TTYException, select, fromTexts)
+import qualified Wybor as W
 import           Paths_wybor (version)
 
 
@@ -57,10 +58,10 @@ inputs = maybe exitFailure return . nonEmpty . Text.lines =<< Text.getContents
 output :: Options -> NonEmpty Text -> IO (Either TTYException (Maybe Text))
 output Options { lines, size, pref, init } ins =
   select $ fromTexts ins
-    & visible %~ probably lines
-    & height %~ probably size
-    & prefix %~ probably pref
-    & initial %~ probably init
+    & W.visible %~ probably lines
+    & W.height %~ probably size
+    & W.prefix %~ probably pref
+    & W.initial %~ probably init
 
 probably :: Maybe a -> a -> a
 probably = maybe id const
