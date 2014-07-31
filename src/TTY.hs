@@ -38,10 +38,8 @@ import           Data.Typeable (Typeable, cast)
 import           Prelude hiding (getChar)
 import           System.Console.ANSI as Ansi
 import           System.Console.Terminal.Size (Window(..), hSize)
-import           System.Exit (ExitCode(..))
 import qualified System.IO as IO
-import qualified System.IO.Error as IO
-import           System.Process
+import qualified System.Posix as Posix
 import           System.Timeout (timeout)
 import           Text.Read (readMaybe)
 
@@ -57,8 +55,6 @@ data TTYException =
     TTYIOException IOException
     -- | Not-a-TTY responded with nonsense to some query
   | TTYNotATTY
-    -- | Failure to configure TTY with @stty@
-  | TTYConfigurationError FilePath [String] ExitCode
     deriving (Show, Eq, Typeable)
 
 instance Exception TTYException where
@@ -74,14 +70,21 @@ withTTY f =
     withConfiguredTTY $ do
       mw <- hWindow outHandle
       case mw of
-        Nothing -> liftIO (E.throwIO TTYNotATTY)
-        Just w  -> f TTY { inHandle, outHandle, winHeight = height w, winWidth = width w }
+        Nothing ->
+          liftIO (E.throwIO TTYNotATTY)
+        Just Window { height, width } ->
+          f TTY { inHandle, outHandle, winHeight = height, winWidth = width }
 
 withFile :: MonadResource m => FilePath -> IO.IOMode -> (IO.Handle -> Conduit i m o) -> Conduit i m o
 withFile name mode = C.bracketP (IO.openFile name mode) IO.hClose
 
 withConfiguredTTY :: MonadResource m => Conduit i m o -> Conduit i m o
-withConfiguredTTY = C.bracketP (do s <- state; configure; return s) unconfigure . const
+withConfiguredTTY = C.bracketP
+  (withFd ttyDevice Posix.ReadOnly $ \fd -> do s <- getAttrs fd; configure fd s; return s)
+  (\as -> withFd ttyDevice Posix.ReadOnly (\fd -> setAttrs fd as)) . const
+
+withFd :: FilePath -> Posix.OpenMode -> (Posix.Fd -> IO a) -> IO a
+withFd name mode = E.bracket (Posix.openFd name mode Nothing Posix.defaultFileFlags) Posix.closeFd
 
 setBuffering :: MonadIO m => IO.Handle -> IO.BufferMode -> m ()
 setBuffering h m = liftIO (IO.hSetBuffering h m)
@@ -89,33 +92,17 @@ setBuffering h m = liftIO (IO.hSetBuffering h m)
 hWindow :: (Integral n, MonadIO m) => IO.Handle -> m (Maybe (Window n))
 hWindow = liftIO . hSize
 
-newtype TTYState = TTYState String
+getAttrs :: Posix.Fd -> IO Posix.TerminalAttributes
+getAttrs = Posix.getTerminalAttributes
 
-state :: IO TTYState
-state = fmap TTYState (stty ["-g"])
+configure :: Posix.Fd -> Posix.TerminalAttributes -> IO ()
+configure fd as = setAttrs fd (withoutModes as [Posix.EnableEcho, Posix.ProcessInput])
 
-configure :: IO ()
-configure = void (stty ["-echo", "-icanon"])
+withoutModes :: Posix.TerminalAttributes -> [Posix.TerminalMode] -> Posix.TerminalAttributes
+withoutModes = foldr (flip Posix.withoutMode)
 
-unconfigure :: TTYState -> IO ()
-unconfigure (TTYState s) = void (stty [s])
-
-stty :: [String] -> IO String
-stty = run "stty"
-
-run :: FilePath -> [String] -> IO String
-run p args =
-  IO.withFile ttyDevice IO.ReadMode   $ \inh ->
-  IO.withFile nullDevice IO.WriteMode $ \errh -> do
-    (_, Just h', _, h) <- createProcess (proc p args)
-      { std_in  = UseHandle inh
-      , std_out = CreatePipe
-      , std_err = UseHandle errh
-      }
-    ec <- waitForProcess h
-    case ec of
-      ExitFailure _ -> E.throwIO (TTYConfigurationError p args ec)
-      ExitSuccess   -> IO.hGetLine h' `IO.catchIOError` \_ -> return ""
+setAttrs :: Posix.Fd -> Posix.TerminalAttributes -> IO ()
+setAttrs fd as = Posix.setTerminalAttributes fd as Posix.Immediately
 
 getChar :: MonadIO m => TTY -> m Char
 getChar = liftIO . IO.hGetChar . inHandle

@@ -419,10 +419,11 @@ line = fmap (view lined)
 
 expand :: TTY -> Conf a -> Item [Text] -> Item [Text]
 expand tty c = \case
-  Plain  xs -> Plain  (take h (map (Text.take w) xs ++ repeat ""))
-  Chosen xs -> Chosen (take h (map (Text.take w) xs ++ repeat ""))
-  Prefix xs -> Prefix (take 1 xs)
+  Plain  xs -> Plain  (compose h w xs)
+  Chosen xs -> Chosen (compose h w xs)
+  Prefix xs -> Prefix (compose 1 w xs)
  where
+  compose x y xs = (take x (map (Text.take y) xs ++ repeat ""))
   w = TTY.winWidth tty
   h = view _height c
 

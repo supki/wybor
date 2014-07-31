@@ -5,5 +5,7 @@ ghc:
     - 7.8
 
 script:
-    - cabal test
+    - cabal install --enable-tests # --run-tests
     - cabal sdist
+    - cabal install example/wybor-bin/
+    - cabal install example/gnoodle
