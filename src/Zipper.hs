@@ -6,12 +6,17 @@ module Zipper
   , fromList
   , zipperN
   , zipper
+  , before
   , focus
+  , after
   , left
   , right
+  , prepend
+  , append
   ) where
 
 import           Control.Lens
+import           Data.Foldable (Foldable, toList)
 import           Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
 
@@ -41,6 +46,10 @@ fromNonEmpty (x :| xs) = Zipper [] x xs
 focus :: Lens' (Zipper a) a
 focus f (Zipper xs y zs) = f y <&> \y' -> Zipper xs y' zs
 
+before, after :: Lens' (Zipper a) [a]
+before f (Zipper xs y zs) = f xs <&> \xs' -> Zipper xs' y zs
+after  f (Zipper xs y zs) = f zs <&> \zs' -> Zipper xs  y zs'
+
 left :: Zipper a -> Zipper a
 left z@(Zipper xs y ys) =
   case xs of
@@ -52,3 +61,9 @@ right z@(Zipper xs x ys) =
   case ys of
     []     -> z
     u : us -> Zipper (x : xs) u us
+
+prepend :: Foldable f => f a -> Zipper a -> Zipper a
+prepend xs = over before (reverse (toList xs) ++)
+
+append :: Foldable f => f a -> Zipper a -> Zipper a
+append xs = over after (++ toList xs)

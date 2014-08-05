@@ -1,6 +1,7 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
@@ -72,9 +73,9 @@ module Wybor
   ( select
   , selections
   , Wybor
-  , fromSource
   , fromAssoc
   , fromTexts
+  , fromQueue
   , HasWybor(..)
   , TTYException(..)
 #ifdef TEST
@@ -85,25 +86,22 @@ module Wybor
 #endif
   ) where
 
-import           Control.Concurrent.Async (Async, async, cancel)
-import           Control.Concurrent.STM.TQueue (TQueue, newTQueueIO, tryReadTQueue)
+import           Control.Concurrent.STM.TQueue (TQueue, tryReadTQueue)
 import           Control.Exception (try)
 import           Control.Lens hiding (lined)
 import           Control.Monad
 import           Control.Monad.IO.Class (MonadIO(..))
 import           Control.Monad.STM (atomically)
-import           Control.Monad.Trans.Control (MonadBaseControl(..), liftBaseWith)
-import           Control.Monad.Trans.Resource (MonadResource, ResourceT, runResourceT)
-import           Control.Monad.Trans.Class (MonadTrans(..))
+import           Control.Monad.Trans.Resource (MonadResource, runResourceT)
 import           Data.Conduit (Source, Conduit, (=$=), ($$))
 import qualified Data.Conduit as C
-import qualified Data.Conduit.TQueue as C
 import           Data.Char (isPrint, isSpace, chr, ord)
 import           Data.Data (Typeable, Data)
 import           Data.Foldable (toList)
 import           Data.Function (on)
 import           Data.List (sortBy)
 import           Data.List.NonEmpty (NonEmpty)
+import qualified Data.List.NonEmpty as NonEmpty
 import           Data.Monoid (Monoid(..), (<>))
 import           Data.Text (Text)
 import qualified Data.Text as Text
@@ -111,6 +109,7 @@ import           Prelude hiding (unlines)
 import           System.Console.ANSI as Ansi
 
 import           Score (score, Input(..), Choice(..))
+import qualified Score
 import           TTY (TTY, TTYException)
 import qualified TTY
 import           Zipper (Zipper, focus, zipperN)
@@ -121,36 +120,41 @@ import qualified Zipper
 --
 -- The user can interrupt the process with @C-d@ and then you get 'Nothing'.
 -- Exceptions result in @'Left' _@
-select :: Wybor (ResourceT IO) a -> IO (Either TTYException (Maybe a))
+select :: Wybor a -> IO (Either TTYException (Maybe a))
 select c = try . runResourceT $ selections c $$ C.await
 
 -- | Continuously select items from 'Wybor'
 --
 -- Exceptions (see 'TTYException') aren't caught
-selections :: (MonadResource m, MonadBaseControl IO m) => Wybor m a -> Source m a
+selections :: MonadResource m => Wybor a -> Source m a
 selections = TTY.withTTY . pipeline
 
-
 -- | The description of the alternative choices, see 'HasWybor'
-data Wybor m a = Wybor
-  { _alts :: Source m (NonEmpty (Text, a))
+data Wybor a = Wybor
+  { _alts :: Alternatives (NonEmpty (Text, a))
   , _conf :: Conf Text
+  } deriving (
+    Functor
 #if __GLASGOW_HASKELL__ >= 708
-  } deriving (Typeable)
-#else
-  }
+  , Typeable
 #endif
+  )
 
-instance Monad m => Functor (Wybor m) where
-  fmap f = over alts (C.mapOutput (fmap (fmap f)))
-
-alts :: Lens (Wybor m a) (Wybor n b) (Source m (NonEmpty (Text, a))) (Source n (NonEmpty (Text, b)))
+alts :: Lens (Wybor a) (Wybor b) (Alternatives (NonEmpty (Text, a))) (Alternatives (NonEmpty (Text, b)))
 alts f x = f (_alts x) <&> \y -> x { _alts = y }
 {-# INLINE alts #-}
 
-conf :: Lens' (Wybor m a) (Conf Text)
+conf :: Lens' (Wybor a) (Conf Text)
 conf f x = f (_conf x) <&> \y -> x { _conf = y }
 {-# INLINE conf #-}
+
+data Alternatives a
+  = Static a
+  | forall x. Dynamic (x -> a) (TQueue x)
+
+instance Functor Alternatives where
+  fmap f (Static a) = Static (f a)
+  fmap f (Dynamic g q) = Dynamic (f . g) q
 
 data Conf a = Conf
   { __visible, __height :: Int
@@ -158,8 +162,8 @@ data Conf a = Conf
   } deriving (Show, Eq, Typeable, Data, Functor)
 
 -- | A bunch of lenses to pick and configure Wybor
-class HasWybor t m a | t -> m a where
-  wybor :: Lens' t (Wybor m a)
+class HasWybor t a | t -> a where
+  wybor :: Lens' t (Wybor a)
 
   -- | How many alternative choices to show at once?
   visible :: Lens' t Int
@@ -181,7 +185,7 @@ class HasWybor t m a | t -> m a where
   prefix = wybor.conf._prefix
   {-# INLINE prefix #-}
 
-instance HasWybor (Wybor m a) m a where
+instance HasWybor (Wybor a) a where
   wybor = id
   {-# INLINE wybor #-}
 
@@ -204,21 +208,24 @@ _prefix f x = f (__prefix x) <&> \y -> x { __prefix = y }
 -- | Construct 'Wybor' from the nonempty list of strings
 --
 -- The strings are used both as keys and values
-fromTexts :: Monad m => NonEmpty Text -> Wybor m Text
+fromTexts :: NonEmpty Text -> Wybor Text
 fromTexts = fromAssoc . fmap (\x -> (x, x))
 
 -- | Construct 'Wybor' from the nonempty list of key-value pairs
-fromAssoc :: Monad m => NonEmpty (Text, a) -> Wybor m a
-fromAssoc = fromSource . C.yield
+fromAssoc :: NonEmpty (Text, a) -> Wybor a
+fromAssoc = fromAlternatives . Static
 
--- | Construct 'Wybor' from the 'Source'
+-- | Construct 'Wybor' from the 'TQueue'
 --
 -- It's useful when the list of alternatives is populated over
 -- time from multiple sources e.g. from HTTP responses
 --
 -- If choices are static, you will be served better by 'fromAssoc' and 'fromTexts'
-fromSource :: Source m (NonEmpty (Text, a)) -> Wybor m a
-fromSource xs = Wybor
+fromQueue :: TQueue (NonEmpty (Text, a)) -> Wybor a
+fromQueue = fromAlternatives . Dynamic id
+
+fromAlternatives :: Alternatives (NonEmpty (Text, a)) -> Wybor a
+fromAlternatives xs = Wybor
   { _alts = xs
   , _conf = defaultConf
   }
@@ -231,32 +238,37 @@ defaultConf = Conf
   , __initial = ""
   }
 
-pipeline :: (MonadIO m, MonadBaseControl IO m) => Wybor m a -> TTY -> Source m a
+pipeline :: MonadIO m => Wybor a -> TTY -> Source m a
 pipeline w tty = do
-  cue <- liftIO newTQueueIO
   pos <- prerenderUI (view conf w) tty
-  ins <- lift . async' $ view alts w $$ C.sinkTQueue cue
-  sourceInput cue tty =$= renderUI (liftIO (cancel ins)) tty pos (view conf w)
+  sourceInput (view alts w) tty =$= renderUI tty pos (view conf w)
 
-async' :: MonadBaseControl IO m => m a -> m (Async (StM m a))
-async' m = liftBaseWith $ \run -> async (run m)
-
-sourceInput :: MonadIO m => TQueue (NonEmpty (Text, a)) -> TTY -> Source m (Either (GenEvent a) KeyEvent)
-sourceInput cue tty = interleaving
+sourceInput :: MonadIO m => Alternatives (NonEmpty (Text, a)) -> TTY -> Source m (Event a)
+sourceInput (Static p)      tty = do yieldChoices p; loop where loop = keyEvent tty loop
+sourceInput (Dynamic f cue) tty = interleaving
  where
   interleaving = tryReadTQueueIO cue >>= \case
-    Nothing -> keyEvent
-    Just p  -> do C.yield (Left (AppendChoices p)); keyEvent
+    Nothing -> keyEvent tty interleaving
+    Just p  -> do yieldChoices (f p); keyEvent tty interleaving
 
-  keyEvent = TTY.getCharNonBlocking tty >>= \case
-    Nothing -> interleaving
-    Just k  -> case parseChar k of
-      Nothing       -> return ()
-      Just Nothing  ->                       interleaving
-      Just (Just e) -> do C.yield (Right e); interleaving
+keyEvent :: MonadIO m => TTY -> Source m (Event a) -> Source m (Event a)
+keyEvent tty c = TTY.getCharNonBlocking tty >>= \case
+  Nothing -> c
+  Just k  -> case parseChar k of
+    Nothing       -> return ()
+    Just Nothing  ->                     c
+    Just (Just e) -> do yieldKeyEvent e; c
+
+yieldChoices :: MonadIO m => NonEmpty (Text, a) -> Source m (Event a)
+yieldChoices = C.yield . Left . AppendChoices
+
+yieldKeyEvent :: MonadIO m => KeyEvent -> Source m (Event a)
+yieldKeyEvent = C.yield . Right
 
 tryReadTQueueIO :: MonadIO m => TQueue a -> m (Maybe a)
 tryReadTQueueIO = liftIO . atomically . tryReadTQueue
+
+type Event a = Either (GenEvent a) KeyEvent
 
 newtype GenEvent a = AppendChoices (NonEmpty (Text, a)) deriving (Show, Eq, Functor)
 
@@ -351,10 +363,9 @@ fromNothing c = Query { _matches = Nothing, _input = view _initial c }
 
 computeMatches :: Text -> [(Text, a)] -> Maybe (Zipper (Text, a))
 computeMatches "" = Zipper.fromList
-computeMatches q  = Zipper.fromList . sortOnByOf choiceScore (flip compare) positive . toList
+computeMatches q  = Zipper.fromList . sortOnByOf choiceScore (flip compare) Score.positive . toList
  where
   choiceScore = score (Input q) . Choice . fst
-  positive s  = s > minBound
 
 sortOnByOf :: Ord b => (a -> b) -> (b -> b -> Ordering) -> (b -> Bool) -> [a] -> [a]
 sortOnByOf f c p = map fst . sortBy (c `on` snd) . filter (p . snd) . map (\x -> (x, f x))
@@ -367,23 +378,23 @@ prerenderUI c tty = do
   replicateM_ offset (TTY.putLine tty)
   return (row - offset)
 
-renderUI
-  :: MonadIO m
-  => (forall n. MonadIO n => n ()) -> TTY -> Int -> Conf Text -> Conduit (Either (GenEvent a) KeyEvent) m a
-renderUI stopInput tty p c = rendering (Choices []) (fromNothing c)
+renderUI :: MonadIO m => TTY -> Int -> Conf Text -> Conduit (Event a) m a
+renderUI tty p c = rendering (Choices []) (fromNothing c)
  where
   rendering cs s = renderQuery tty c p s >> C.await >>= \case
     Nothing ->
       cleanUp
     Just (Left (AppendChoices xs)) ->
-      let cs' = over choices (++ toList xs) cs in rendering cs' (fromInput cs' (view input s))
+      let
+        f   = NonEmpty.filter (\x -> Score.positive (score (Input (view input s)) (Choice (fst x))))
+        cs' = over choices (++ toList xs) cs
+        s'  = over matches (maybe (Zipper.fromList (f xs)) (Just . Zipper.append (f xs))) s
+      in
+        rendering cs' s'
     Just (Right e) -> case handleEvent cs s e of
-      Nothing ->
-        do cleanUp; stopInput
-      Just (Left x) ->
-        do cleanUp; C.yieldOr x stopInput; rendering cs s
-      Just (Right s') ->
-        rendering cs s'
+      Nothing         -> cleanUp
+      Just (Left x)   -> do cleanUp; C.yield x; rendering cs s
+      Just (Right s') -> rendering cs s'
 
   cleanUp = TTY.clearScreenBottom tty
 

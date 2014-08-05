@@ -24,14 +24,11 @@ library
     Haskell2010
   build-depends:
       ansi-terminal >= 0.6
-    , async         >= 2.0
     , base          >= 4.6 && < 5
     , conduit       >= 1.1
     , lens          >= 4.3
-    , monad-control >= 0.3.3
     , resourcet     >= 1.1
     , stm           >= 2.4
-    , stm-conduit   >= 2.5.0
     , text          >= 1.1
     , transformers  >= 0.3
     , semigroups    >= 0.15
@@ -53,18 +50,15 @@ test-suite spec
     exitcode-stdio-1.0
   build-depends:
       ansi-terminal
-    , async
     , base          >= 4.6 && < 5
     , conduit
     , exceptions
     , hspec         >= 1.10
     , lens
-    , monad-control
     , process
     , resourcet
     , semigroups
     , stm
-    , stm-conduit
     , terminal-size
     , text
     , transformers

@@ -3,7 +3,7 @@
 module Main (main) where
 
 import           Control.Lens hiding (argument)
-import           Control.Monad.Trans.Resource (MonadResource, MonadBaseControl, runResourceT)
+import           Control.Monad.Trans.Resource (MonadResource)
 import           Control.Monad.IO.Class (MonadIO(..))
 import           Data.ByteString (ByteString)
 import           Data.Conduit (ResumableSource, Conduit, ($$+-), ($$), (=$=))
@@ -29,7 +29,7 @@ type Url = String
 main :: IO ()
 main = Http.withManager $ inquire ftp
 
-inquire :: (MonadResource m, MonadBaseControl IO m) => Url -> Http.Manager -> m ()
+inquire :: MonadResource m => Url -> Http.Manager -> m ()
 inquire url m = do
   req <- Http.parseUrl url
   res <- Http.http req m
@@ -40,10 +40,10 @@ inquire url m = do
     Just _ ->
       download res (takeFileName url)
 
-choices :: (MonadResource m, MonadBaseControl IO m) => Url -> Http.Manager -> Document -> m ()
+choices :: MonadResource m => Url -> Http.Manager -> Document -> m ()
 choices url m doc = case nonEmpty (deeper doc) of
   Just xs -> selections (fromTexts xs) $$ do
-    C.awaitForever $ \s -> liftIO (runResourceT (inquire (url </> view unpacked s) m))
+    C.awaitForever $ \s -> inquire (url </> view unpacked s) m
   Nothing -> return ()
 
 deeper :: Document -> [Text]

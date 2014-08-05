@@ -80,5 +80,5 @@ shouldSelect (Input xs s) r =
       , winWidth  = 7
       } `shouldReturn` r
 
-selectOnce :: Show a => Wybor IO a -> TTY -> IO (Maybe a)
+selectOnce :: Show a => Wybor a -> TTY -> IO (Maybe a)
 selectOnce c tty = pipeline c tty $$ C.await

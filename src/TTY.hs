@@ -1,5 +1,6 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE NamedFieldPuns #-}
 module TTY
 #ifdef TEST
@@ -23,7 +24,7 @@ module TTY
   , moveCursor
   ) where
 
-import           Control.Exception (Exception(..), SomeException(..), IOException)
+import           Control.Exception (Exception(..), IOException)
 import qualified Control.Exception as E
 import           Control.Monad
 import           Control.Monad.IO.Class (MonadIO(..))
@@ -34,11 +35,12 @@ import qualified Data.Conduit as C
 import           Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
-import           Data.Typeable (Typeable, cast)
+import           Data.Typeable (Typeable)
 import           Prelude hiding (getChar)
 import           System.Console.ANSI as Ansi
 import           System.Console.Terminal.Size (Window(..), hSize)
 import qualified System.IO as IO
+import qualified System.IO.Error as IO
 import qualified System.Posix as Posix
 import           System.Timeout (timeout)
 import           Text.Read (readMaybe)
@@ -50,17 +52,7 @@ data TTY = TTY
   } deriving (Show, Eq)
 
 -- | Exceptions thrown while manipulating @\/dev\/tty@ device
-data TTYException =
-    -- | Generic I/O exception
-    TTYIOException IOException
-    -- | Not-a-TTY responded with nonsense to some query
-  | TTYNotATTY
-    deriving (Show, Eq, Typeable)
-
-instance Exception TTYException where
-  fromException e@(SomeException se)
-    | Just e' <- fromException e = Just (TTYIOException e')
-    | otherwise                  = cast se
+newtype TTYException = TTYIOException IOException deriving (Show, Eq, Typeable, Exception)
 
 withTTY :: MonadResource m => (TTY -> Conduit i m o) -> Conduit i m o
 withTTY f =
@@ -71,7 +63,7 @@ withTTY f =
       mw <- hWindow outHandle
       case mw of
         Nothing ->
-          liftIO (E.throwIO TTYNotATTY)
+          liftIO (ioError (notATTY outHandle))
         Just Window { height, width } ->
           f TTY { inHandle, outHandle, winHeight = height, winWidth = width }
 
@@ -133,7 +125,7 @@ getCursorRow tty = do
   res <- parseAnsiResponse tty
   case res of
     Just r  -> return (r - 1) -- the response is 1-based
-    Nothing -> liftIO (E.throwIO TTYNotATTY)
+    Nothing -> liftIO (ioError (notATTY (inHandle tty)))
  where
   magicCursorPositionSequence = Text.pack "\ESC[6n"
 
@@ -149,6 +141,9 @@ parseAnsiResponse tty = liftM parse (go [])
 
 moveCursor :: TTY -> Int -> Int -> IO ()
 moveCursor = Ansi.hSetCursorPosition . outHandle
+
+notATTY :: IO.Handle -> IOException
+notATTY h = IO.mkIOError IO.illegalOperationErrorType "Not a TTY" (Just h) Nothing
 
 ttyDevice, nullDevice :: FilePath
 ttyDevice  = "/dev/tty"

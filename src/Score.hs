@@ -5,6 +5,7 @@ module Score
   , Input(..)
   , Choice(..)
   , score
+  , positive
 #ifdef TEST
   , minimum
 #endif
@@ -51,6 +52,12 @@ rec = go 0
     Just (a, as) -> case Text.findIndex (== a) bs of
       Nothing -> Nothing
       Just i  -> go (len + i) as (Text.drop (i + 1) bs)
+
+-- | The score is at least a little bit greater than the absolute minimum
+--
+-- This means it will be presented to user, even if at the bottom of the list
+positive :: Score -> Bool
+positive n = n > minBound
 
 minimum :: Ord a => [a] -> Maybe a
 minimum = foldr (\x a -> liftA2 min (Just x) a <|> Just x) Nothing
