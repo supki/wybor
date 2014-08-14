@@ -26,9 +26,9 @@ library
       ansi-terminal >= 0.6
     , base          >= 4.6 && < 5
     , conduit       >= 1.1
+    , containers
     , lens          >= 4.3
     , resourcet     >= 1.1
-    , stm           >= 2.4
     , text          >= 1.1
     , transformers  >= 0.3
     , semigroups    >= 0.15
@@ -52,13 +52,12 @@ test-suite spec
       ansi-terminal
     , base          >= 4.6 && < 5
     , conduit
-    , exceptions
+    , containers
     , hspec         >= 1.10
     , lens
     , process
     , resourcet
     , semigroups
-    , stm
     , terminal-size
     , text
     , transformers

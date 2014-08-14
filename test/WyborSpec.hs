@@ -53,13 +53,6 @@ spec =
      `shouldSelect`
       Just 4
 
-    it "supports infinite input (as long as the query is empty)" $
-      Input
-        (zip (repeat "foo") [1..])
-        [keyCtrl 'N', keyCtrl 'N', keyEnter]
-     `shouldSelect`
-      Just 3
-
 data Input a = Input [(Text, a)] String
 
 type Expect a = (Show a, Eq a)

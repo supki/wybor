@@ -16,11 +16,15 @@ module Zipper
   ) where
 
 import           Control.Lens
-import           Data.Foldable (Foldable, toList)
+import           Data.Foldable (Foldable(foldMap), toList)
 import           Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
+import           Data.Monoid ((<>))
 
 data Zipper a = Zipper [a] a [a] deriving (Show, Eq, Functor)
+
+instance Foldable Zipper where
+  foldMap f (Zipper xs y zs) = foldMap f (reverse xs) <> f y <> foldMap f zs
 
 -- | @zipperN n f z@ applies the function @f@ to the 'Zipper' @z@
 -- at *at most @n@* points around its 'focus'

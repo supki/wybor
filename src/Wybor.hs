@@ -1,14 +1,10 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE ExistentialQuantification #-}
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes #-}
 -- | Console line fuzzy search as a library.
 --
 -- It's probably easier to toy with the library through
@@ -75,7 +71,7 @@ module Wybor
   , Wybor
   , fromAssoc
   , fromTexts
-  , fromQueue
+  , fromIO
   , HasWybor(..)
   , TTYException(..)
 #ifdef TEST
@@ -86,23 +82,24 @@ module Wybor
 #endif
   ) where
 
-import           Control.Concurrent.STM.TQueue (TQueue, tryReadTQueue)
 import           Control.Exception (try)
 import           Control.Lens hiding (lined)
 import           Control.Monad
 import           Control.Monad.IO.Class (MonadIO(..))
-import           Control.Monad.STM (atomically)
 import           Control.Monad.Trans.Resource (MonadResource, runResourceT)
 import           Data.Conduit (Source, Conduit, (=$=), ($$))
 import qualified Data.Conduit as C
 import           Data.Char (isPrint, isSpace, chr, ord)
 import           Data.Data (Typeable, Data)
-import           Data.Foldable (toList)
+import           Data.Foldable (Foldable, toList)
 import           Data.Function (on)
 import           Data.List (sortBy)
 import           Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NonEmpty
 import           Data.Monoid (Monoid(..), (<>))
+import           Data.Sequence (Seq, (><))
+import qualified Data.Sequence as Seq
+import           Data.Sequence.Lens (seqOf)
 import           Data.Text (Text)
 import qualified Data.Text as Text
 import           Prelude hiding (unlines)
@@ -150,15 +147,15 @@ conf f x = f (_conf x) <&> \y -> x { _conf = y }
 
 data Alternatives a
   = Static a
-  | forall x. Dynamic (x -> a) (TQueue x)
+  | Dynamic (IO (Maybe (Maybe a)))
 
 instance Functor Alternatives where
   fmap f (Static a) = Static (f a)
-  fmap f (Dynamic g q) = Dynamic (f . g) q
+  fmap f (Dynamic k) = Dynamic (fmap (fmap (fmap f)) k)
 
 data Conf a = Conf
-  { __visible, __height :: Int
-  , __initial, __prefix :: a
+  { _visible, _height :: Int
+  , _initial, _prefix :: a
   } deriving (Show, Eq, Typeable, Data, Functor)
 
 -- | A bunch of lenses to pick and configure Wybor
@@ -167,43 +164,27 @@ class HasWybor t a | t -> a where
 
   -- | How many alternative choices to show at once?
   visible :: Lens' t Int
-  visible = wybor.conf._visible
+  visible = wybor.conf. \f x -> f (_visible x) <&> \y -> x { _visible = y }
   {-# INLINE visible #-}
 
   -- | How many lines every alternative takes on the screen?
   height :: Lens' t Int
-  height = wybor.conf._height
+  height = wybor.conf. \f x -> f (_height x) <&> \y -> x { _height = y }
   {-# INLINE height #-}
 
   -- | Initial search string
   initial :: Lens' t Text
-  initial = wybor.conf._initial
+  initial = wybor.conf. \f x -> f (_initial x) <&> \y -> x { _initial = y }
   {-# INLINE initial #-}
 
   -- | Prompt prefix
   prefix :: Lens' t Text
-  prefix = wybor.conf._prefix
+  prefix = wybor.conf. \f x -> f (_prefix x) <&> \y -> x { _prefix = y }
   {-# INLINE prefix #-}
 
 instance HasWybor (Wybor a) a where
   wybor = id
   {-# INLINE wybor #-}
-
-_visible :: Lens' (Conf a) Int
-_visible f x = f (__visible x) <&> \y -> x { __visible = y }
-{-# INLINE _visible #-}
-
-_height :: Lens' (Conf a) Int
-_height f x = f (__height x) <&> \y -> x { __height = y }
-{-# INLINE _height #-}
-
-_initial :: Lens' (Conf a) a
-_initial f x = f (__initial x) <&> \y -> x { __initial = y }
-{-# INLINE _initial #-}
-
-_prefix :: Lens' (Conf a) a
-_prefix f x = f (__prefix x) <&> \y -> x { __prefix = y }
-{-# INLINE _prefix #-}
 
 -- | Construct 'Wybor' from the nonempty list of strings
 --
@@ -215,14 +196,31 @@ fromTexts = fromAssoc . fmap (\x -> (x, x))
 fromAssoc :: NonEmpty (Text, a) -> Wybor a
 fromAssoc = fromAlternatives . Static
 
--- | Construct 'Wybor' from the 'TQueue'
+-- | Construct 'Wybor' from the 'IO' action that streams choices
 --
 -- It's useful when the list of alternatives is populated over
--- time from multiple sources e.g. from HTTP responses
+-- time from multiple sources (for instance, from HTTP responses)
+--
+-- The interface is tailored for the use with closeable queues from the "stm-chans" package:
+--
+-- >>> q <- newTMQueueIO
+-- >>> ... {- a bunch of threads populating and eventually closing the queue -}
+-- >>> c <- 'select' ('fromIO' (atomically (tryReadTMQueue q)))
+-- >>> print c
+--
+-- That is, if the 'IO' action returns @'Nothing'@ the queue will never be read from again
+-- and it can return @'Just' 'Nothing'@ when there's nothing to add to the choices __yet__
+--
+-- It's still possible to use non-fancy queues:
+--
+-- >>> q <- newTQueueIO
+-- >>> ... {- a bunch of threads populating the queue -}
+-- >>> c <- 'select' ('fromIO' (fmap Just (atomically (tryReadTQueue q))))
+-- >>> print c
 --
 -- If choices are static, you will be served better by 'fromAssoc' and 'fromTexts'
-fromQueue :: TQueue (NonEmpty (Text, a)) -> Wybor a
-fromQueue = fromAlternatives . Dynamic id
+fromIO :: IO (Maybe (Maybe (NonEmpty (Text, a)))) -> Wybor a
+fromIO = fromAlternatives . Dynamic
 
 fromAlternatives :: Alternatives (NonEmpty (Text, a)) -> Wybor a
 fromAlternatives xs = Wybor
@@ -232,24 +230,25 @@ fromAlternatives xs = Wybor
 
 defaultConf :: Conf Text
 defaultConf = Conf
-  { __visible = 10
-  , __height = 1
-  , __prefix = ">>> "
-  , __initial = ""
+  { _visible = 10
+  , _height  = 1
+  , _prefix  = ">>> "
+  , _initial = ""
   }
 
 pipeline :: MonadIO m => Wybor a -> TTY -> Source m a
 pipeline w tty = do
-  pos <- prerenderUI (view conf w) tty
-  sourceInput (view alts w) tty =$= renderUI tty pos (view conf w)
+  pos <- prerenderUI w tty
+  sourceInput (view alts w) tty =$= renderUI tty pos w
 
 sourceInput :: MonadIO m => Alternatives (NonEmpty (Text, a)) -> TTY -> Source m (Event a)
-sourceInput (Static p)      tty = do yieldChoices p; loop where loop = keyEvent tty loop
-sourceInput (Dynamic f cue) tty = interleaving
+sourceInput (Static p)   tty = do yieldChoices p; loop where loop = keyEvent tty loop
+sourceInput (Dynamic io) tty = interleaving
  where
-  interleaving = tryReadTQueueIO cue >>= \case
-    Nothing -> keyEvent tty interleaving
-    Just p  -> do yieldChoices (f p); keyEvent tty interleaving
+  interleaving = liftIO io >>= \case
+    Nothing       -> let loop = keyEvent tty loop in loop
+    Just Nothing  -> keyEvent tty interleaving
+    Just (Just p) -> do yieldChoices p; keyEvent tty interleaving
 
 keyEvent :: MonadIO m => TTY -> Source m (Event a) -> Source m (Event a)
 keyEvent tty c = TTY.getCharNonBlocking tty >>= \case
@@ -264,9 +263,6 @@ yieldChoices = C.yield . Left . AppendChoices
 
 yieldKeyEvent :: MonadIO m => KeyEvent -> Source m (Event a)
 yieldKeyEvent = C.yield . Right
-
-tryReadTQueueIO :: MonadIO m => TQueue a -> m (Maybe a)
-tryReadTQueueIO = liftIO . atomically . tryReadTQueue
 
 type Event a = Either (GenEvent a) KeyEvent
 
@@ -306,10 +302,10 @@ keyCtrl :: Char -> Char
 keyCtrl a = chr (ord a - 64)
 
 newtype Choices a = Choices
-  { unChoices :: [(Text, a)]
+  { unChoices :: Seq (Text, a)
   }
 
-choices :: Iso (Choices a) (Choices b) [(Text, a)] [(Text, b)]
+choices :: Iso (Choices a) (Choices b) (Seq (Text, a)) (Seq (Text, b))
 choices = iso unChoices Choices
 
 data Query a b = Query
@@ -332,7 +328,7 @@ handleEvent c s = \case
   Clear        -> Just (Right (clear c))
   DeleteChar   -> Just (Right (deleteChar c s))
   DeleteWord   -> Just (Right (deleteWord c s))
-  AppendChar x -> Just (Right (append c s x))
+  AppendChar x -> Just (Right (append s x))
 
 done :: Query a b -> Maybe b
 done = preview (matches.traverse.focus._2)
@@ -346,8 +342,8 @@ up = over (matches.traverse) Zipper.left
 clear :: Choices a -> Query Text a
 clear c = fromInput c mempty
 
-append :: Choices a -> Query Text a -> Char -> Query Text a
-append c s x = fromInput c (view input s |> x)
+append :: Query Text a -> Char -> Query Text a
+append s x = fromInput (Choices (seqOf (matches.folded.folded) s)) (view input s |> x)
 
 deleteChar :: Choices a -> Query Text a -> Query Text a
 deleteChar c = maybe (clear c) (fromInput c . fst) . unsnoc . view input
@@ -358,28 +354,28 @@ deleteWord c = fromInput c . view (input.to (Text.dropWhileEnd (not . isSpace) .
 fromInput :: Choices a -> Text -> Query Text a
 fromInput c q = Query { _matches = view (choices.to (computeMatches q)) c, _input = q }
 
-fromNothing :: Conf Text -> Query Text a
-fromNothing c = Query { _matches = Nothing, _input = view _initial c }
+fromNothing :: Wybor a -> Query Text b
+fromNothing c = Query { _matches = Nothing, _input = view initial c }
 
-computeMatches :: Text -> [(Text, a)] -> Maybe (Zipper (Text, a))
-computeMatches "" = Zipper.fromList
+computeMatches :: Foldable f => Text -> f (Text, a) -> Maybe (Zipper (Text, a))
+computeMatches "" = Zipper.fromList . toList
 computeMatches q  = Zipper.fromList . sortOnByOf choiceScore (flip compare) Score.positive . toList
  where
   choiceScore = score (Input q) . Choice . fst
 
-sortOnByOf :: Ord b => (a -> b) -> (b -> b -> Ordering) -> (b -> Bool) -> [a] -> [a]
-sortOnByOf f c p = map fst . sortBy (c `on` snd) . filter (p . snd) . map (\x -> (x, f x))
+sortOnByOf :: (Foldable f, Ord b) => (a -> b) -> (b -> b -> Ordering) -> (b -> Bool) -> f a -> [a]
+sortOnByOf f c p = map fst . sortBy (c `on` snd) . filter (p . snd) . map (\x -> (x, f x)) . toList
 
 
-prerenderUI :: MonadIO m => Conf a -> TTY -> m Int
+prerenderUI :: MonadIO m => Wybor a -> TTY -> m Int
 prerenderUI c tty = do
   row <- TTY.getCursorRow tty
   let offset = max 0 (linesTaken c - (TTY.winHeight tty - row))
   replicateM_ offset (TTY.putLine tty)
   return (row - offset)
 
-renderUI :: MonadIO m => TTY -> Int -> Conf Text -> Conduit (Event a) m a
-renderUI tty p c = rendering (Choices []) (fromNothing c)
+renderUI :: MonadIO m => TTY -> Int -> Wybor a -> Conduit (Event b) m b
+renderUI tty p c = rendering (Choices Seq.empty) (fromNothing c)
  where
   rendering cs s = renderQuery tty c p s >> C.await >>= \case
     Nothing ->
@@ -387,7 +383,7 @@ renderUI tty p c = rendering (Choices []) (fromNothing c)
     Just (Left (AppendChoices xs)) ->
       let
         f   = NonEmpty.filter (\x -> Score.positive (score (Input (view input s)) (Choice (fst x))))
-        cs' = over choices (++ toList xs) cs
+        cs' = over choices (>< Seq.fromList (toList xs)) cs
         s'  = over matches (maybe (Zipper.fromList (f xs)) (Just . Zipper.append (f xs))) s
       in
         rendering cs' s'
@@ -398,7 +394,7 @@ renderUI tty p c = rendering (Choices []) (fromNothing c)
 
   cleanUp = TTY.clearScreenBottom tty
 
-renderQuery :: MonadIO m => TTY -> Conf Text -> Int -> Query Text a -> m ()
+renderQuery :: MonadIO m => TTY -> Wybor a -> Int -> Query Text b -> m ()
 renderQuery tty c top s =
   liftIO . TTY.withHiddenCursor tty $ renderContent tty top (columnsTaken c s) (content tty c s)
 
@@ -408,9 +404,8 @@ renderContent tty x y t = do
   TTY.putText tty t
   TTY.moveCursor tty x y
 
-content :: TTY -> Conf Text -> Query Text b -> Text
-content tty c s =
-  review lined . map (text . unline . clean . highlight tty . expand tty c . line) $ items c s
+content :: TTY -> Wybor a -> Query Text b -> Text
+content tty c = review lined . map (text . unline . clean . highlight tty . expand tty c . line) . items c
 
 data Item s = Plain s | Chosen s | Prefix s deriving (Functor)
 
@@ -428,7 +423,7 @@ lined = iso Text.lines (Text.intercalate "\n")
 line :: Item Text -> Item [Text]
 line = fmap (view lined)
 
-expand :: TTY -> Conf a -> Item [Text] -> Item [Text]
+expand :: TTY -> Wybor a -> Item [Text] -> Item [Text]
 expand tty c = \case
   Plain  xs -> Plain  (compose h w xs)
   Chosen xs -> Chosen (compose h w xs)
@@ -436,7 +431,7 @@ expand tty c = \case
  where
   compose x y xs = (take x (map (Text.take y) xs ++ repeat ""))
   w = TTY.winWidth tty
-  h = view _height c
+  h = view height c
 
 clean :: Item [Text] -> Item [Text]
 clean = fmap (map (\l -> l <> Text.pack Ansi.clearFromCursorToLineEndCode))
@@ -453,16 +448,16 @@ swap b = Text.pack (Ansi.setSGRCode [Ansi.SetSwapForegroundBackground b])
 unline :: Item [Text] -> Item Text
 unline = fmap (review lined)
 
-items :: Conf Text -> Query Text b -> [Item Text]
-items c s = take (view _visible c + 1) $
-     Prefix (view _prefix c <> view input s)
-  :  maybe [] (zipperN (view _visible c) combine . fmap fst) (preview (matches.traverse) s)
+items :: Wybor a -> Query Text b -> [Item Text]
+items c s = take (view visible c + 1) $
+     Prefix (view prefix c <> view input s)
+  :  maybe [] (zipperN (view visible c) combine . fmap fst) (preview (matches.traverse) s)
   ++ repeat (Plain "")
  where
   combine xs y zs = map Plain xs ++ [Chosen y] ++ map Plain zs
 
-linesTaken :: Conf a -> Int
-linesTaken c = view _visible c * view _height c + 1
+linesTaken :: Wybor a -> Int
+linesTaken c = view visible c * view height c + 1
 
-columnsTaken :: Conf Text -> Query Text a -> Int
-columnsTaken c s = lengthOf (_prefix.each) c + lengthOf (input.each) s
+columnsTaken :: Wybor a -> Query Text b -> Int
+columnsTaken c s = lengthOf (beside (prefix.each) (input.each)) (c, s)
