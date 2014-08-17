@@ -76,10 +76,9 @@ module Wybor
   , TTYException(..)
 #ifdef TEST
   , pipeline
-  , keyEnter
-  , keyBksp
-  , keyCtrl
 #endif
+  -- * A bunch of helpers to use with 'focused' and 'normal'
+  , module Ansi
   ) where
 
 import           Control.Exception (try)
@@ -89,8 +88,8 @@ import           Control.Monad.IO.Class (MonadIO(..))
 import           Control.Monad.Trans.Resource (MonadResource, runResourceT)
 import           Data.Conduit (Source, Conduit, (=$=), ($$))
 import qualified Data.Conduit as C
-import           Data.Char (isPrint, isSpace, chr, ord)
-import           Data.Data (Typeable, Data)
+import           Data.Char (isSpace)
+import           Data.Data (Typeable)
 import           Data.Foldable (Foldable, toList)
 import           Data.Function (on)
 import           Data.List (sortBy)
@@ -103,7 +102,7 @@ import           Data.Sequence.Lens (seqOf)
 import           Data.Text (Text)
 import qualified Data.Text as Text
 import           Prelude hiding (unlines)
-import           System.Console.ANSI as Ansi
+import qualified System.Console.ANSI as Ansi
 
 import           Score (score, Input(..), Choice(..))
 import qualified Score
@@ -111,6 +110,7 @@ import           TTY (TTY, TTYException)
 import qualified TTY
 import           Zipper (Zipper, focus, zipperN)
 import qualified Zipper
+import           Ansi
 
 
 -- | Select an item from 'Wybor' once
@@ -156,31 +156,46 @@ instance Functor Alternatives where
 data Conf a = Conf
   { _visible, _height :: Int
   , _initial, _prefix :: a
-  } deriving (Show, Eq, Typeable, Data, Functor)
+  , _focused, _normal :: a -> a
+  } deriving (Typeable)
 
 -- | A bunch of lenses to pick and configure Wybor
 class HasWybor t a | t -> a where
   wybor :: Lens' t (Wybor a)
 
-  -- | How many alternative choices to show at once?
+  -- | How many alternative choices to show at once? (default: @10@)
   visible :: Lens' t Int
   visible = wybor.conf. \f x -> f (_visible x) <&> \y -> x { _visible = y }
   {-# INLINE visible #-}
 
-  -- | How many lines every alternative takes on the screen?
+  -- | How many lines every alternative takes on the screen? (default: @1@)
   height :: Lens' t Int
   height = wybor.conf. \f x -> f (_height x) <&> \y -> x { _height = y }
   {-# INLINE height #-}
 
-  -- | Initial search string
+  -- | Initial search string (default: @""@)
   initial :: Lens' t Text
   initial = wybor.conf. \f x -> f (_initial x) <&> \y -> x { _initial = y }
   {-# INLINE initial #-}
 
-  -- | Prompt prefix
+  -- | Prompt prefix (default: @">>> "@)
   prefix :: Lens' t Text
   prefix = wybor.conf. \f x -> f (_prefix x) <&> \y -> x { _prefix = y }
   {-# INLINE prefix #-}
+
+  -- | Decoration applied to the focused item (swaps foreground and background colors by default)
+  --
+  -- /Note:/ should not introduce any printable symbols
+  focused :: Lens' t (Text -> Text)
+  focused = wybor.conf. \f x -> f (_focused x) <&> \y -> x { _focused = y }
+  {-# INLINE focused #-}
+
+  -- | Decoration applied to other items (is @id@ by default)
+  --
+  -- /Note:/ should not introduce any printable symbols
+  normal :: Lens' t (Text -> Text)
+  normal = wybor.conf. \f x -> f (_normal x) <&> \y -> x { _normal = y }
+  {-# INLINE normal #-}
 
 instance HasWybor (Wybor a) a where
   wybor = id
@@ -234,6 +249,8 @@ defaultConf = Conf
   , _height  = 1
   , _prefix  = ">>> "
   , _initial = ""
+  , _focused = \t -> Text.concat [swap, t, unswap]
+  , _normal  = id
   }
 
 pipeline :: MonadIO m => Wybor a -> TTY -> Source m a
@@ -251,9 +268,9 @@ sourceInput (Dynamic io) tty = interleaving
     Just (Just p) -> do yieldChoices p; keyEvent tty interleaving
 
 keyEvent :: MonadIO m => TTY -> Source m (Event a) -> Source m (Event a)
-keyEvent tty c = TTY.getCharNonBlocking tty >>= \case
+keyEvent tty c = TTY.getKey tty >>= \case
   Nothing -> c
-  Just k  -> case parseChar k of
+  Just k  -> case parseKey k of
     Nothing       -> return ()
     Just Nothing  ->                     c
     Just (Just e) -> do yieldKeyEvent e; c
@@ -279,27 +296,20 @@ data KeyEvent =
   | AppendChar Char
     deriving (Show, Eq)
 
-parseChar :: Char -> Maybe (Maybe KeyEvent)
-parseChar c
-  | c == keyEnter    = Just (Just Done)
-  | c == keyCtrl 'D' = Nothing
-  | c == keyCtrl 'N' = Just (Just Down)
-  | c == keyCtrl 'P' = Just (Just Up)
-  | c == keyCtrl 'U' = Just (Just Clear)
-  | c == keyCtrl 'W' = Just (Just DeleteWord)
-  | c == keyBksp     = Just (Just DeleteChar)
-  | c == keyCtrl 'H' = Just (Just DeleteChar)
-  | isPrint c        = Just (Just (AppendChar c))
-  | otherwise        = Just Nothing
-
-keyEnter, keyBksp :: Char
-keyEnter = '\n'
-keyBksp  = '\DEL'
-
--- | @keyCtrl c@ converts @c@ to Ctrl-@c@ character. Only expected to work
--- with upper case ASCII characters from @A-Z@ range.
-keyCtrl :: Char -> Char
-keyCtrl a = chr (ord a - 64)
+parseKey :: TTY.Key -> Maybe (Maybe KeyEvent)
+parseKey = \case
+  TTY.Ctrl 'J'  -> Just (Just Done)
+  TTY.Ctrl 'D'  -> Nothing
+  TTY.Ctrl 'N'  -> Just (Just Down)
+  TTY.ArrowDown -> Just (Just Down)
+  TTY.Ctrl 'P'  -> Just (Just Up)
+  TTY.ArrowUp   -> Just (Just Up)
+  TTY.Ctrl 'U'  -> Just (Just Clear)
+  TTY.Ctrl 'W'  -> Just (Just DeleteWord)
+  TTY.Bksp      -> Just (Just DeleteChar)
+  TTY.Ctrl 'H'  -> Just (Just DeleteChar)
+  TTY.Print c   -> Just (Just (AppendChar c))
+  _             -> Just Nothing
 
 newtype Choices a = Choices
   { unChoices :: Seq (Text, a)
@@ -405,7 +415,8 @@ renderContent tty x y t = do
   TTY.moveCursor tty x y
 
 content :: TTY -> Wybor a -> Query Text b -> Text
-content tty c = review lined . map (text . unline . clean . highlight tty . expand tty c . line) . items c
+content tty c = review lined
+  . map (text . unline . clean . line . decorate c . unline . expand tty c . line) . items c
 
 data Item s = Plain s | Chosen s | Prefix s deriving (Functor)
 
@@ -429,21 +440,26 @@ expand tty c = \case
   Chosen xs -> Chosen (compose h w xs)
   Prefix xs -> Prefix (compose 1 w xs)
  where
-  compose x y xs = (take x (map (Text.take y) xs ++ repeat ""))
+  compose x y xs = take x (map (crop w y) (map notabs xs ++ repeat ""))
+  notabs  = Text.replace "\t" (Text.replicate 8 " ")
   w = TTY.winWidth tty
   h = view height c
+
+crop :: Int -> Int -> Text -> Text
+crop w n = Text.pack . go 0 . Text.unpack
+ where
+  go k (x : xs) = let k' = k + wcwidth x in if k' <= n then x : go k' xs else replicate (w - k) ' '
+  go k []       = replicate (w - k) ' '
+
+foreign import ccall unsafe "wybor_mk_wcwidth" wcwidth :: Char -> Int
 
 clean :: Item [Text] -> Item [Text]
 clean = fmap (map (\l -> l <> Text.pack Ansi.clearFromCursorToLineEndCode))
 
-highlight :: TTY -> Item [Text] -> Item [Text]
-highlight _   xs@(Plain _) = xs
-highlight tty (Chosen xs) =
-  Chosen (map (\x -> swap True <> Text.justifyLeft (TTY.winWidth tty) ' ' x <> swap False) xs)
-highlight _   xs@(Prefix _) = xs
-
-swap :: Bool -> Text
-swap b = Text.pack (Ansi.setSGRCode [Ansi.SetSwapForegroundBackground b])
+decorate :: Wybor a -> Item Text -> Item Text
+decorate c (Plain xs)  = Plain  (view normal c xs)
+decorate c (Chosen xs) = Chosen (view focused c xs)
+decorate _ (Prefix xs) = Prefix xs
 
 unline :: Item [Text] -> Item Text
 unline = fmap (review lined)

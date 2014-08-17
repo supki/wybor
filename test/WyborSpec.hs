@@ -2,6 +2,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module WyborSpec (spec) where
 
+import           Data.Char (ord, chr)
 import           Data.Conduit (($$))
 import qualified Data.Conduit as C
 import qualified Data.List.NonEmpty as NonEmpty
@@ -75,3 +76,11 @@ shouldSelect (Input xs s) r =
 
 selectOnce :: Show a => Wybor a -> TTY -> IO (Maybe a)
 selectOnce c tty = pipeline c tty $$ C.await
+
+-- | @keyCtrl c@ converts @c@ to Ctrl-@c@ character. Only expected to work
+-- with upper case ASCII characters from @A-Z@ range.
+keyCtrl :: Char -> Char
+keyCtrl a = chr (ord a - 64)
+
+keyEnter :: Char
+keyEnter = '\n'

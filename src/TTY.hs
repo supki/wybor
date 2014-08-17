@@ -1,6 +1,7 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 module TTY
 #ifdef TEST
@@ -13,8 +14,8 @@ module TTY
 #endif
   , TTYException(..)
   , withTTY
-  , getChar
-  , getCharNonBlocking
+  , Key(..)
+  , getKey
   , putText
   , putTextLine
   , putLine
@@ -29,7 +30,7 @@ import qualified Control.Exception as E
 import           Control.Monad
 import           Control.Monad.IO.Class (MonadIO(..))
 import           Control.Monad.Trans.Resource (MonadResource)
-import           Data.Char (isDigit)
+import           Data.Char (isPrint, isDigit, chr, ord)
 import           Data.Conduit (Conduit)
 import qualified Data.Conduit as C
 import           Data.Text (Text)
@@ -96,11 +97,34 @@ withoutModes = foldr (flip Posix.withoutMode)
 setAttrs :: Posix.Fd -> Posix.TerminalAttributes -> IO ()
 setAttrs fd as = Posix.setTerminalAttributes fd as Posix.Immediately
 
+data Key =
+    Print Char
+  | Ctrl Char -- invariant: this character is in ['A'..'Z'] range
+  | Bksp
+  | ArrowUp
+  | ArrowDown
+  | ArrowLeft
+  | ArrowRight
+    deriving (Show, Eq)
+
+getKey :: MonadIO m => TTY -> m (Maybe Key)
+getKey tty = liftIO . fmap join . timeout 100000 $
+  getChar tty >>= \case
+    '\DEL' -> return (Just Bksp)
+    '\ESC' -> getChar tty >>= \case
+      '[' -> getChar tty >>= \case
+        'A' -> return (Just ArrowUp)
+        'B' -> return (Just ArrowDown)
+        'C' -> return (Just ArrowRight)
+        'D' -> return (Just ArrowLeft)
+        _   -> return Nothing
+      _ -> return Nothing
+    c | c `elem` ['\SOH'..'\SUB'] -> return (Just (Ctrl (chr (ord c + 64))))
+      | isPrint c -> return (Just (Print c))
+      | otherwise -> return Nothing
+
 getChar :: MonadIO m => TTY -> m Char
 getChar = liftIO . IO.hGetChar . inHandle
-
-getCharNonBlocking :: MonadIO m => TTY -> m (Maybe Char)
-getCharNonBlocking = liftIO . timeout 100000 . IO.hGetChar . inHandle
 
 putText :: MonadIO m => TTY -> Text -> m ()
 putText TTY { outHandle } = liftIO . Text.hPutStr outHandle

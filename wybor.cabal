@@ -42,6 +42,9 @@ library
     Score
     TTY
     Zipper
+    Ansi
+  c-sources:
+    cbits/wcwidth.c
 
 test-suite spec
   default-language:
@@ -71,3 +74,5 @@ test-suite spec
     -threaded
   cpp-options:
     -DTEST
+  c-sources:
+    cbits/wcwidth.c
