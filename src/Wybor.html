@@ -29,7 +29,7 @@
 <a name="line-20"></a><span class='hs-comment'>-- @</span>
 <a name="line-21"></a><span class='hs-comment'>-- &gt;&gt;&gt; :set -XOverloadedStrings</span>
 <a name="line-22"></a><span class='hs-comment'>-- &gt;&gt;&gt; :set -XOverloadedLists</span>
-<a name="line-23"></a><span class='hs-comment'>-- &gt;&gt;&gt; import Control.Lens</span>
+<a name="line-23"></a><span class='hs-comment'>-- &gt;&gt;&gt; import "Control.Lens"</span>
 <a name="line-24"></a><span class='hs-comment'>-- &gt;&gt;&gt; import Wybor</span>
 <a name="line-25"></a><span class='hs-comment'>-- @</span>
 <a name="line-26"></a><span class='hs-comment'>--</span>
@@ -37,7 +37,7 @@
 <a name="line-28"></a><span class='hs-comment'>-- please see 'HasWybor' class):</span>
 <a name="line-29"></a><span class='hs-comment'>--</span>
 <a name="line-30"></a><span class='hs-comment'>-- @</span>
-<a name="line-31"></a><span class='hs-comment'>-- &gt;&gt;&gt; select (fromTexts ["foo", "bar", "baz"] &amp; prefix .~ "λ&gt; ")</span>
+<a name="line-31"></a><span class='hs-comment'>-- &gt;&gt;&gt; 'select' ('fromTexts' ["foo", "bar", "baz"] &amp; 'prefix' .~ "λ&gt; ")</span>
 <a name="line-32"></a><span class='hs-comment'>-- λ&gt;</span>
 <a name="line-33"></a><span class='hs-comment'>-- __foo__</span>
 <a name="line-34"></a><span class='hs-comment'>-- bar</span>
