@@ -24,7 +24,7 @@ executable wybor
       base                 >= 4.6 && < 5
     , conduit
     , lens
-    , optparse-applicative >= 0.9
+    , optparse-applicative >= 0.10
     , resourcet
     , semigroups
     , text
